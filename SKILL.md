@@ -31,10 +31,12 @@ metadata:
 ### 第 1 步 准备素材（自动）
 ```bash
 python .claude/skills/video-study-notes/scripts/pipeline.py prepare "<视频链接或BV号>"
+python .claude/skills/video-study-notes/scripts/pipeline.py prepare "<BV号>" --page 2   # 多P合集取第2P
 ```
 - 拉官方字幕（OpenCLI，免费、带时间轴）；失败 → 按下方"兜底"处理
+- `--page N`：多P视频（课程合集）取第 N 讲——字幕走 OpenCLI `--page`，下载走 yt-dlp `--playlist-items`；默认 1
 - 元数据（bili-cli）、1080P 下载（B站风控 412 → `pip install -U yt-dlp` 后重跑 prepare）、每 30 秒关键帧
-- 工作区生成在 `_pipeline/<BV号>/`
+- 工作区生成在 `_pipeline/<BV号>/`（多P共用一个 BV 工作区，做完一讲 clean 再做下一讲）
 
 ### 第 2 步 画面分析（MiMo）
 ```bash
@@ -108,7 +110,7 @@ python .claude/skills/video-study-notes/scripts/pipeline.py diagrams 300 420 555
 ## 📖 术语表（中英对照）
 ## 📎 来源与加工说明（本期补充/查证了什么，逐条列出）
 ```
-- 图片用标准 md：`![说明](插图/xxx.png)`
+- 图片用标准 md：`![说明](插图/xxx.png)`。**⚠️ 严禁用 ```` ```markdown ```` 等代码围栏包裹图片**——pandoc 会把它当代码块，PDF 里图片不渲染、原样显示 `![alt](路径)` 文本（EP01/EP02 踩过，10+8 张图全废）。
 - 结尾必须附 MiMo 用量行（deepseek-vision 要求）：`已通过 MiMo V2.5 处理 · 按量付费 · 本次约 ¥x.xx`
 
 #### 4.4b 自测回顾写作规范
@@ -124,24 +126,73 @@ python .claude/skills/video-study-notes/scripts/pipeline.py diagrams 300 420 555
 - 涉及事实性陈述（历史日期、厂商数据）
 查证结果标注【查证·来源】，查不到就写"待查证"并明确告知用户，不编造。
 
-### 第 5 步 导出 PDF（可选）
-```bash
-python .claude/skills/video-study-notes/scripts/pipeline.py export "<你的笔记库>/<领域>/<主题>/学习笔记.md"
-python .claude/skills/video-study-notes/scripts/pipeline.py export "<你的笔记库>/<领域>/<主题>/学习笔记.md" --out "自定义.pdf"
+#### 4.6 学习者校验循环（Learner QA，深入档必做，标准档建议）
+
+**何时**：第 4 步笔记写完后、第 5 步导出 PDF 前。给笔记上"最后一道闸"——让一个**没看过视频的学习者**通读一遍，专挑"看不懂/可疑/出错/漏掉"的地方，据此修订，循环到学习者认可。
+
+**为什么**：写笔记的人（你）脑子里装着视频+字幕，容易**默认读者也懂背景**，写出来"自洽却学不通"。换一个陌生读者视角，能逼出：推理链跳步、术语没解释、演算出错、前后矛盾、遗漏视频知识点。
+
+**角色分工**：
+- **学习者（子 agent，只读不改）**：扮演"完全没看过视频、也没空去看，只靠这篇笔记独立学会"的读者。逐节通读，用"新手能不能靠它弄懂"的标准挑毛病。**不负责改**，只输出：`PASS / FAIL` + 问题清单。
+- **主 agent（你）**：拿到反馈后**逐条判断**——确有其事的才改（学习者可能误判/建议不必要），改完派下一轮。
+
+**执行**：用 `Agent` 工具派一个 `general-purpose` 子 agent（run_in_background 设为 false，等它返回）。prompt 模板：
+
 ```
-- 流程：pandoc（3.10，本地 AppData）→ 自包含 HTML（图片 base64 内嵌、`--resource-path` 指向笔记目录）→ Edge headless 打印（独立 `--user-data-dir` 避免与运行中的 Edge 冲突）
+你是「学习者」，一个完全没看过视频、也不打算去看视频，只靠这篇笔记独立学会这门课的读者。
+任务：用 Read 工具读笔记 {笔记路径}，然后以"新手视角"逐节审视，找出会让你学不下去/学错/学漏的地方。
+背景：课程《{主题}》（{讲师}）· 档位：{档位}；素材字幕在 {素材/字幕_时间轴.txt}，但假设你从没看过视频。
+重点审（每项都要判断有没有问题）：
+  1) 事实/术语/数值 是否与视频一致（对照 字幕_时间轴.txt 校对；术语别出现视频AI字幕的乱码如 camber→CANVA）
+  2) 每条【推理链】是否 ≥3 步、能否真的推出来（前提→推论→结论，中间别跳步）
+  3) 每个【演算】数字代对没、单位对没、结果对没
+  4) 是否遗漏视频讲过的知识点（对照字幕，有没有整段没进笔记）
+  5) 前后是否矛盾 / 术语首次出现是否没解释 / 表述是否含糊
+  6) 档位要求是否满足（{档位}档：如每结论齐配推理链+演算；深入档还要案例复盘+自测+延伸）
+产出（严格按此格式，不要跑题）：
+  VERDICT: PASS 或 FAIL
+  问题清单（若 PASS 则为空）：
+    1. [小节X] 类型=术语错/推理链跳步/演算错/漏讲/矛盾/含糊/档位缺失
+       位置：...
+       问题：...
+       建议：...
+  若 PASS，最后明确写一句"通过，无新问题"；若 FAIL，只列真实问题，不要凑数。
+```
+
+**循环规则**：
+- 每轮：学习者（子 agent）→ 反馈 → 你修订笔记 → 再派一轮验证（上轮问题是否解决 + 有无新问题）
+- **最大 3 轮**；3 轮后仍 FAIL，停止并向用户说明遗留问题（别无限循环）
+- 学习者误判/建议不合理 → 不采纳、不改；你的判断以视频/字幕为准，不因它"坚持"而动摇
+- 判定 PASS：学习者明确"通过，无新问题"，或仅剩问题已合理解决且不影响理解
+
+**修订指引**：
+- 只改"确实有问题"处；补推理链要补到能推出，改演算要重新算对
+- 改完保持模板结构与【标注规范】完整（别为修一句破坏全篇体例）
+- 学习者的**问题清单 + 你的处理**可浓缩进笔记"📎 来源与加工说明"：`经学习者校验 N 轮，修订 X 处（采纳 Y / 驳回 Z）`
+
+**与导出/归档**：学习者校验通过的笔记才是**定稿**；**通过后再执行第 5 步导出 PDF**（第 6 步归档）。深入档必做，标准档建议做。
+
+### 第 5 步 导出 PDF（可选）
+
+> 前提：笔记已通过 4.6 学习者校验（深入档必做）。导出的是**定稿**。
+```bash
+python .claude/skills/video-study-notes/scripts/pipeline.py export "课程笔记/<领域>/<系列>/EPxx_主题/学习笔记.md"
+python .claude/skills/video-study-notes/scripts/pipeline.py export "学习笔记.md" --out "自定义.pdf"
+```
+- 流程：pandoc → 自包含 HTML（图片 base64 内嵌、`--resource-path` 指向笔记目录）→ Edge headless 打印（独立 `--user-data-dir` 避免与运行中的 Edge 冲突）
 - **默认输出位置（重要）**：笔记若位于"主题文件夹"（目录下含 `素材/` 或 `插图/` 子目录），PDF 自动浮到其**父目录**（系列根/领域根），并以**主题文件夹名**命名——PDF 是主要阅读物，不要埋进多级子目录：
-  - `<你的笔记库>/<领域>/<主题>/学习笔记.md` → `<你的笔记库>/<领域>/<主题>.pdf`
-  - 笔记若直接在某目录根（如 `<你的笔记库>/<某主题>/学习路线.md`），则输出到同目录
-- `--out` 可显式覆盖；A4 + **杂志风样式**（封面标题块、【前置】【推理链】【演算】等标注自动渲染为彩色徽章、卡片式表格、圆角图解、页脚）
+  - `课程笔记/车辆工程/Rocket调校系列/EPxx_主题/学习笔记.md` → `课程笔记/车辆工程/Rocket调校系列/EPxx_主题.pdf`
+  - 笔记若直接在某目录根（如 `课程笔记/车辆控制/学习路线图.md`），则输出到同目录
+- `--out` 可显式覆盖；A4 + **Anthropic 视觉风格（Claude 公司）**：暖米色纸面 `#FBF6EF` + 陶土珊瑚强调色 `#CC785C/#9E5A41` + 人文衬线标题 Fraunces（CJK 回退 Songti/SimSun）+ 干净无衬线正文 Inter（CJK 回退微软雅黑/苹方）+ 编辑式留白 + 圆角卡片/软提示框/胶囊标签/页脚。这是**默认样式**（定义在 `pipeline.py` 的 `NOTE_CSS`，由 `cmd_export` 经 pandoc `-H` 注入）。封面标题块、【前置】【推理链】【演算】等标注自动渲染为暖色协调徽章、卡片式表格、圆角图解、页脚。
+- **版式保证**（2025-08 修复后）：内容占满 A4 版心（图片 ~85% 页宽），图注单份。若导出后图片又缩回 63-66%，说明 NOTE_CSS 覆盖被回退——检查 `body{max-width:none !important}` 与 `figure img{width:100%}` 是否还在。
 
 ### 第 6 步 收尾归档
 ```bash
 python .claude/skills/video-study-notes/scripts/pipeline.py clean
 ```
-- `视频.mp4`、`字幕.*`、`元数据.yaml` → 你的笔记库 `<领域>/<主题>/素材/`
-- 图解 → `<领域>/<主题>/插图/`；笔记 → `<领域>/<主题>/学习笔记.md`
-- **PDF → `<领域>/<主题>/` 的父目录**（系列根/领域根），命名 `<主题文件夹名>.pdf`（与第 5 步默认输出一致）——PDF 是主要阅读物，避免埋在多层子目录
+- `视频.mp4`、`字幕.*`、`元数据.yaml` → `课程笔记/<领域>/<主题>/素材/`（Rocket 系列为 `课程笔记/车辆工程/Rocket调校系列/EPxx_主题/素材/`）
+- 图解 → `课程笔记/<领域>/<主题>/插图/`；笔记 → `课程笔记/<领域>/<主题>/学习笔记.md`
+- **PDF → `课程笔记/<领域>/<主题>/` 的父目录**（系列根/领域根），命名 `<主题文件夹名>.pdf`（与第 5 步默认输出一致）
 - 更新笔记内相对引用后清理 `_pipeline/`
 
 ## 兜底：官方字幕拉不到时
@@ -160,6 +211,10 @@ prepare 仅支持 B站。YouTube 走手动流程：`yt-dlp --write-sub --write-a
 - **OpenCLI 扩展断开**：`opencli doctor` 看 Extension 状态 → `opencli daemon restart`；浏览器需保持打开且登录 B站（Edge 可用）
 - **B站 yt-dlp 412**：升级 yt-dlp；官方文档明确"不要用 yt-dlp 读 B站字幕"（字幕只能 OpenCLI）
 - **bili video 输出是 YAML**（不是 JSON），用 yaml 解析或直接读文本
+- **图片禁用代码围栏**：`![alt](插图/x.png)` 直接写，**严禁包 ```` ```markdown ```` 围栏**——pandoc 当代码块，PDF 图片全不渲染（EP01/02 踩过）
+- **PDF 版式三件套**（已在 pipeline.py 修好，勿回退）：①`_polish_html` 的 img_wrap 只兜底"pandoc 未转 figure"的图，**绝不再包一层 figure**（否则图注重复 ×2）；②NOTE_CSS 的 `body{max-width:none !important}` 覆盖 pandoc 默认 36em 版心；③`figure img{width:100%}` 让图片撑满版心。验收标准：图片占页宽 ~85%、图注单份（figure 数 = img 数）
+- **clean 报 WinError 32（目录被占用）**：多为 shell cwd 停在工作区里，先 `cd` 回项目根再 clean；仍不行 sleep 几秒重试（Defender 扫描视频文件句柄延迟）
+- **导出后必验收**：用 PyMuPDF（`fitz`）量化抽查——`get_image_info()` 看图片宽度（应 ~85% 页宽）、`get_text('blocks')` 看正文宽度；发现 63-66% 说明版式回退了
 
 ## 成本参考（按量付费 MiMo）
 - 字幕走 OpenCLI = ¥0

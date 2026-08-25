@@ -111,7 +111,7 @@ def cmd_prepare(args):
 
     # [1/4] 字幕
     print("[1/4] OpenCLI 拉取官方字幕 ...")
-    code, out, err = run(["opencli", "bilibili", "subtitle", bv, "-f", "yaml"], timeout=120)
+    code, out, err = run(["opencli", "bilibili", "subtitle", bv, "--page", str(args.page), "-f", "yaml"], timeout=120)
     if code != 0:
         print("⚠️ 字幕拉取失败（OpenCLI 扩展未连接？）：")
         print("  1. 保持 Edge/Chrome 打开且已登录 B站")
@@ -138,7 +138,7 @@ def cmd_prepare(args):
     else:
         print("[3/4] yt-dlp 下载 1080P ...")
         code, out, err = run(
-            ["yt-dlp", "--no-playlist",
+            ["yt-dlp", "--playlist-items", str(args.page),
              "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best",
              "--merge-output-format", "mp4",
              "-o", str(workdir / "视频.%(ext)s"), BILI_URL.format(bv=bv)],
@@ -306,10 +306,13 @@ pre code { background: none; border: none; padding: 0; font-size: 9pt; }
 
 /* ===== 图解 ===== */
 figure { margin: 0.9em 0; page-break-inside: avoid; }
-figure img { max-width: 100%; height: auto; display: block; margin: 0 auto;
+figure img { width: 100%; height: auto; display: block; margin: 0 auto;
              border-radius: 10px; border: 1px solid #e2e8f0;
              box-shadow: 0 4px 14px rgba(30,41,59,.10); }
 figcaption { font-size: 8.5pt; color: #64748b; text-align: center; margin-top: 4px; }
+
+/* ===== 覆盖 pandoc 默认模板的 36em 版心，让内容占满 A4 版心 ===== */
+body { max-width: none !important; padding-left: 2mm; padding-right: 2mm; }
 
 /* ===== 自测答案 ===== */
 .answer { border: 1px solid #c7d6ef; border-radius: 10px; margin: 1em 0; padding: 10px 14px;
@@ -358,14 +361,16 @@ def _polish_html(html: str) -> str:
         html = re.sub(rf"【{name}([^】]*)】",
                       lambda m, c=cls: f'<span class="tag tag-{c}">{m.group(0)[1:-1]}</span>',
                       html)
-    # 2) 图片 → <figure> + 图注（alt 文字转 figcaption）
+    # 2) 图片图注兜底：pandoc implicit_figures 已为"独立成段的图片"生成 <figure>+<figcaption>
+    #    （图注=alt），这里只处理"整段仅一张图但 pandoc 未转 figure"的罕见情况，
+    #    绝不再包一层，否则 figure/figcaption 双份、图注重复。
     def img_wrap(m):
-        tag = m.group(0)
+        tag = m.group(1)
         am = re.search(r'alt="([^"]*)"', tag)
         if not am or not am.group(1):
-            return tag
+            return m.group(0)
         return f'<figure>{tag}<figcaption>{am.group(1)}</figcaption></figure>'
-    html = re.sub(r'<img[^>]*>', img_wrap, html)
+    html = re.sub(r'<p>(<img[^>]*>)</p>', img_wrap, html)
     # 3) <details><summary> → 答案盒（PDF 中 details 默认折叠，无法展开）
     def det_repl(m):
         head = m.group(1).strip() or "答案"
@@ -459,6 +464,7 @@ def main():
     sub.add_parser("doctor", help="检查依赖与通道").set_defaults(func=cmd_doctor)
     p_prep = sub.add_parser("prepare", help="拉字幕+元数据+下载+抽帧")
     p_prep.add_argument("input", help="B站视频链接或 BV 号")
+    p_prep.add_argument("--page", type=int, default=1, help="分P选集序号（1 开始），多P视频取该集；默认 1")
     p_prep.add_argument("--no-download", action="store_true", help="跳过视频下载")
     _add_workdir(p_prep)
     p_prep.set_defaults(func=cmd_prepare)
