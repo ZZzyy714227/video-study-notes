@@ -6,7 +6,7 @@ description: >
   自动化：OpenCLI 拉官方字幕（免费带时间轴）→ bili-cli 元数据 → yt-dlp 下载 1080P
   → ffmpeg 抽关键帧 → 多模态视觉直读（具备多模态读图能力的 Agent 无需 MiMo，纯文本环境由 MiMo 兜底）
   → 高清单帧图解提取 → 整理成精美笔记。
-  笔记按三层加工模型系统化产出（L1 还原 / L2 填充 / L3 查证），带标注规范与深度档位。
+  笔记按三层加工模型系统化产出（L1 还原 / L2 填充 / L3 查证），带标注规范、深度档位与学习者校验循环。
   笔记可用 pipeline.py export 一键导出 PDF（pandoc → 自包含 HTML → Edge 打印，中文完美）。
 metadata:
   tags: [video, notes, bilibili, study]
@@ -15,9 +15,21 @@ metadata:
 # 视频学习笔记流水线
 
 ## 何时使用
-用户给视频链接 + 笔记诉求时（B站/YouTube）。已就绪的工具链：OpenCLI（Edge 扩展已装）、bili-cli、yt-dlp、ffmpeg、原生多模态视觉能力（通过 `view_file` 工具直接读图，优先推荐）、MiMo（deepseek-vision 技能，仅在纯文本环境兜底使用）。
+用户给视频链接 + 笔记诉求时（B站/YouTube）。
+
+### 依赖工具（已就绪 / 可选）
+- **原生多模态视觉能力**：Agent 内置通过 `view_file` 工具直接读图（优先推荐，0 外部 API 成本）
+- **OpenCLI**：B站官方字幕唯一通道（浏览器扩展已装 v1.0.22，免费、带时间轴）
+- **bili-cli**：B站视频元数据（经 agent-reach 安装）
+- **yt-dlp**：1080P 视频下载（支持直接流媒体直链下载兜底）
+- **ffmpeg**：抽关键帧 / 提取高清单帧
+- **pandoc + Edge headless**：笔记 → Anthropic 风格精美 PDF
+- **PyMuPDF (`fitz`)**：PDF 下边距带页脚盖章与量化排版抽查
+- **MiMo（deepseek-vision 技能）**：关键帧画面分析与 ASR 兜底（仅纯文本 LLM 环境需要）
 
 所有命令在**项目根目录**执行（本技能安装于 `.claude/skills/video-study-notes/`）。
+
+---
 
 ## 流水线
 
@@ -45,7 +57,8 @@ python .claude/skills/video-study-notes/scripts/pipeline.py prepare "<BV号>" --
   python .claude/skills/video-study-notes/scripts/pipeline.py analyze
   ```
   - 仅在纯文本 LLM 或无法直接读图的环境下使用；
-  - 每批 6 帧、显式 `--files` 模式；读取 `_pipeline/<BV号>/画面分析汇总.txt`。
+  - 每批 6 帧、显式 `--files` 模式（⚠️ MiMo 位置参数多图模式只读第一张，禁止使用）；
+  - 读 `_pipeline/<BV号>/画面分析汇总.txt`；有 `truncated=true` 的批单独重跑。
 
 ### 第 3 步 图解提取（按需）
 从字幕 + 画面分析定位所有真实图解时间点（术语卡、公式图、曲线图、剖视图、BOM表），然后：
@@ -55,7 +68,9 @@ python .claude/skills/video-study-notes/scripts/pipeline.py diagrams 300 420 555
 ```
 - 按时间戳抽取 1080P 高清单帧到 `diagrams/d_<t>s.png`；
 - **原生多模态 Agent**：直接使用 `view_file` 查看抽出的高清 PNG 图解进行最终确认与信息提取；
-- **纯文本 Agent**：由 MiMo 进行批量语义验证（读 `diagrams/验证.txt`）。
+- **纯文本 Agent**：由 MiMo 进行批量语义验证（读 `diagrams/验证.txt`）→ 只保留真图解，其余删除。
+
+---
 
 ### 第 4 步 写笔记（系统化加工）
 
@@ -133,16 +148,67 @@ python .claude/skills/video-study-notes/scripts/pipeline.py diagrams 300 420 555
 - 涉及事实性陈述（历史日期、厂商数据）
 查证结果标注【查证·来源】，查不到就写"待查证"并明确告知用户，不编造。
 
-#### 4.6 学习者校验循环（Learner QA，深入档必做，标准档建议）
-- 笔记定稿前，派一个陌生读者视角子 agent 进行新手视角审视，确保推理链不跳步、演算无误、概念完备。
+#### 4.6 学习者校验循环（Learner QA，深入档必做，标准档建议做）
+
+> 🎯 **目的**：杜绝"作者自己觉得写清楚了、读者其实看不懂"的盲区。笔记不是作者自嗨，必须经受住一个**零预备知识读者**的挑剔审视。
+
+- **学习者（子 agent，只读不改）**：扮演"完全没看过视频、也没空去看，只靠这篇笔记独立学会"的读者。逐节通读，用"新手能不能靠它弄懂"的标准挑毛病。**不负责改**，只输出：`PASS / FAIL` + 问题清单。
+- **主 agent（你）**：拿到反馈后**逐条判断**——确有其事的才改（学习者可能误判/建议不必要），改完派下一轮。
+
+**执行**：派一个子 agent 进行审视。Prompt 模板：
+
+```
+你是「学习者」，一个完全没看过视频、也不打算去看视频，只靠这篇笔记独立学会这门课的读者。
+任务：读笔记 {笔记路径}，然后以"新手视角"逐节审视，找出会让你学不下去/学错/学漏的地方。
+背景：课程《{主题}》（{讲师}）· 档位：{档位}；素材字幕在 {素材/字幕_时间轴.txt}，但假设你从没看过视频。
+重点审（每项都要判断有没有问题）：
+  1) 事实/术语/数值 是否与视频一致（对照 字幕_时间轴.txt 校对；术语别出现视频AI字幕的乱码如 camber→CANVA）
+  2) 每条【推理链】是否 ≥3 步、能否真的推出来（前提→推论→结论，中间别跳步）
+  3) 每个【演算】数字代对没、单位对没、结果对没
+  4) 是否遗漏视频讲过的知识点（对照字幕，有没有整段没进笔记）
+  5) 前后是否矛盾 / 术语首次出现是否没解释 / 表述是否含糊
+  6) 档位要求是否满足（{档位}档：如每结论齐配推理链+演算；深入档还要案例复盘+自测+延伸）
+产出（严格按此格式，不要跑题）：
+  VERDICT: PASS 或 FAIL
+  问题清单（若 PASS 则为空）：
+    1. [小节X] 类型=术语错/推理链跳步/演算错/漏讲/矛盾/含糊/档位缺失
+       位置：...
+       问题：...
+       建议：...
+  若 PASS，最后明确写一句"通过，无新问题"；若 FAIL，只列真实问题，不要凑数。
+```
+
+**循环规则**：
+- 每轮：学习者（子 agent）→ 反馈 → 你修订笔记 → 再派一轮验证（上轮问题是否解决 + 有无新问题）
+- **最大 3 轮**；3 轮后仍 FAIL，停止并向用户说明遗留问题（避免无限循环）
+- 学习者误判/建议不合理 → 不采纳、不改；你的判断以视频/字幕事实为准，不因它"坚持"而动摇
+- 判定 PASS：学习者明确"通过，无新问题"，或仅剩问题已合理解决且不影响理解
+
+**修订指引**：
+- 只改"确实有问题"处；补推理链要补到能推出，改演算要重新算对
+- 改完保持模板结构与【标注规范】完整（别为修一句破坏全篇体例）
+- 学习者的**问题清单 + 你的处理**可浓缩进笔记"📎 来源与加工说明"：`经学习者校验 N 轮，修订 X 处（采纳 Y / 驳回 Z）`
+
+**与导出/归档**：学习者校验通过的笔记才是**定稿**；**通过后再执行第 5 步导出 PDF**。
+
+---
 
 ### 第 5 步 导出 PDF（可选）
+
+> 前提：笔记已通过 4.6 学习者校验（深入档必做）。导出的是**定稿**。
+
 ```bash
 python .claude/skills/video-study-notes/scripts/pipeline.py export "<你的笔记库>/<领域>/<主题>/学习笔记.md"
 python .claude/skills/video-study-notes/scripts/pipeline.py export "<你的笔记库>/<领域>/<主题>/学习笔记.md" --out "自定义.pdf"
 ```
-- 流程：pandoc（3.10）→ 自包含 HTML（图片内嵌、MathML 公式）→ Edge headless 打印 → PyMuPDF 自动页脚盖章；
-- 产物自动输出到主题文件夹的父目录（系列根/领域根），版式遵循 **Anthropic 视觉风格**（暖米色纸面 `#FBF6EF`、陶土珊瑚强调色 `#CC785C/#9E5A41`、人文衬线标题 Fraunces、干净无衬线正文 Inter）。
+- 流程：pandoc（3.10）→ 自包含 HTML（图片内嵌、MathML 公式）→ Edge headless 打印（独立 `--user-data-dir` 避免冲突）→ PyMuPDF 自动页脚盖章；
+- **默认输出位置（重要）**：笔记若位于"主题文件夹"（目录下含 `素材/` 或 `插图/` 子目录），PDF 自动浮到其**父目录**（系列根/领域根），并以**主题文件夹名**命名——PDF 是主要阅读物，不要埋进多级子目录：
+  - `课程笔记/01_车辆工程/01_底盘与悬架调校/Rocket调校系列/EPxx_主题/学习笔记.md` → `课程笔记/01_车辆工程/01_底盘与悬架调校/Rocket调校系列/EPxx_主题.pdf`
+  - 笔记若直接在某目录根（如 `课程笔记/01_车辆工程/03_动力学与控制/控制理论与路线图/学习路线图.md`），则输出到同目录
+- `--out` 可显式覆盖；A4 + **Anthropic 视觉风格（Claude 公司）**：暖米色纸面 `#FBF6EF` + 陶土珊瑚强调色 `#CC785C/#9E5A41` + 人文衬线标题 Fraunces（CJK 回退 Songti/SimSun）+ 干净无衬线正文 Inter（CJK 回退微软雅黑/苹方）+ 编辑式留白 + 圆角卡片/软提示框/胶囊标签/页脚。这是**默认样式**（定义在 `pipeline.py` 的 `NOTE_CSS`，由 `cmd_export` 经 pandoc `-H` 注入）。封面标题块、【前置】【推理链】【演算】等标注自动渲染为暖色协调徽章、卡片式表格、圆角图解、页脚。
+- **版式保证**：内容占满 A4 版心（图片 ~85% 页宽），图注单份。若导出后图片又缩回 63-66%，说明 NOTE_CSS 覆盖被回退——检查 `body{max-width:none !important}` 与 `figure img{width:100%}` 是否还在。
+
+---
 
 ### 第 6 步 收尾归档与清理
 ```bash
@@ -152,16 +218,35 @@ python .claude/skills/video-study-notes/scripts/pipeline.py clean
 - **轻量素材归档**（可选）：仅将 `字幕.*`、`元数据.yaml` 或推导脚本按需放入 `素材/`；
 - **大文件清理**：大体积 `视频.mp4` 与所有临时抽帧随 `_pipeline/` 清空彻底删除，不保留在原地占用磁盘空间（核心资产为 MD、插图与 PDF）。
 
+---
+
 ## 兜底：官方字幕拉不到时
-1. `ffmpeg` 从视频提取音频切片；
-2. ASR 转写（MiMo ASR 或本地 Whisper）。
+MiMo ASR 转写（或本地 Whisper）：
+1. `ffmpeg` 从视频提取音频，切成 ≤6 分钟段（MiMo ASR 有 8192 token 上限，约 16 分钟音频）
+2. 每段 `PYTHONIOENCODING=utf-8 python ~/.claude/skills/deepseek-vision/scripts/mimo.py asr --file seg.mp3 --language zh --timeout 300`
+3. ¥0.5/音频小时，结果无时间戳
 
 ## YouTube 视频
 prepare 仅支持 B站。YouTube 走手动流程：`yt-dlp --write-sub --write-auto-sub --sub-lang "zh-Hans,zh,en" --skip-download`（匿名可能 429 限流，重试或配 cookie），下载抽帧后用 `pipeline.py analyze --workdir` 指定工作区。
 
-## 关键坑位（历次实测）
-- **多模态模型无需外部调用**：当 Agent 工具箱有 `view_file`（支持查看图片）时，直接看 `frames/*.jpg`，不必执行 `pipeline.py analyze`。
+---
+
+## 关键坑位（历次实测 9 大避坑指南）
+
+- **多模态模型无需外部调用**：当 Agent 工具箱有 `view_file`（支持查看图片）时，直接看 `frames/*.jpg`，不必执行 `pipeline.py analyze`，0 成本且更精准。
 - **Windows 终端 GBK 乱码**：一律 `PYTHONIOENCODING=utf-8` + 结果落盘后读文件，不在终端读中文输出。
-- **图片禁用代码围栏（已自动防护）**：`![alt](插图/x.png)` 直接写，**严禁包 ```` ```markdown ```` 围栏**——pandoc 会把它当代码块，PDF 里图片不渲染。
-- **PDF 版式三件套**：`body{max-width:none !important}` + `figure img{width:100%}` 确保图片占满版心（~85% 页宽），图注单份。
-- **clean 报 WinError 32（目录被占用）**：多为 shell cwd 停在工作区里，先 `cd` 回项目根再 clean。
+- **MiMo 多图传参**：必须 `--files` 逐文件传；位置参数模式偶发只读第一张。
+- **批次规模**：≤6 帧/批，`--max-tokens 3000 --timeout 300`；整批跑超过 5 分钟就拆。
+- **OpenCLI 扩展断开**：`opencli doctor` 看 Extension 状态 → `opencli daemon restart`；浏览器需保持打开且登录 B站（Edge 可用）。
+- **B站 yt-dlp 412**：升级 yt-dlp 或切换流媒体直链下载通道；官方文档明确"不要用 yt-dlp 读 B站字幕"（字幕只能走 OpenCLI）。
+- **bili video 输出是 YAML**（不是 JSON），用 yaml 解析或直接读文本。
+- **图片禁用代码围栏（已自动防护）**：`![alt](插图/x.png)` 直接写，**严禁包 ```` ```markdown ```` 围栏**——pandoc 会把它当代码块，PDF 里图片全不渲染（EP01/02 踩过大坑）。
+- **PDF 版式三件套**（已在 pipeline.py 修好，勿回退）：①`_polish_html` 的 img_wrap 只兜底"pandoc 未转 figure"的图，**绝不再包一层 figure**（否则图注重复 ×2）；②NOTE_CSS 的 `body{max-width:none !important}` 覆盖 pandoc 默认 36em 版心；③`figure img{width:100%}` 让图片撑满版心。验收标准：图片占页宽 ~85%、图注单份（figure 数 = img 数）。
+- **clean 报 WinError 32（目录被占用）**：多为 shell cwd 停在工作区里，先 `cd` 回项目根再 clean；仍不行 sleep 几秒重试（Defender 扫描视频文件句柄延迟）。
+- **导出后必验收**：用 PyMuPDF（`fitz`）量化抽查——`get_image_info()` 看图片宽度（应 ~85% 页宽）、`get_text('blocks')` 看正文宽度；发现 63-66% 说明版式回退了。
+
+## 成本参考（按量付费 MiMo）
+- 字幕走 OpenCLI = ¥0
+- 原生多模态直读 = ¥0
+- 画面分析（纯文本走 MiMo）：27 分钟视频 ≈ ¥0.1（55 帧 × 9 批）
+- ASR 兜底：17.9 分钟 ≈ ¥0.15
